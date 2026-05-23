@@ -1630,7 +1630,8 @@ fn test_read_only_functions_when_paused() {
     let user = Address::generate(&env);
     let freelancer = Address::generate(&env);
     let token = env.register_contract(None, MockToken);
-    let milestones = vec![&env, (String::from_str(&env, "Task 1"), 100_i128, 2000_u64)];
+    // Deadline must exceed the 48-hour time advance done by pause_escrow (172801s)
+    let milestones = vec![&env, (String::from_str(&env, "Task 1"), 100_i128, 1_000_000_u64)];
 
     let job_id = client.create_job(
         &user,
