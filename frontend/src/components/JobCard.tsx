@@ -50,7 +50,7 @@ export default function JobCard({ job, index = 0 }: JobCardProps) {
             <span className="text-xs font-medium text-stellar-purple bg-stellar-purple/10 px-2 py-1 rounded w-fit">
               {job.category}
             </span>
-            {isClient && isOwnJob && (
+            {job.escrowStatus && (
               <EscrowStatusBadge status={job.escrowStatus} />
             )}
           </div>
