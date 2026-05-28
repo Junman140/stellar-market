@@ -1188,8 +1188,6 @@ fn internal_resolve(
                 ],
             );
 
-            let client = dispute.client.clone();
-            let freelancer = dispute.freelancer.clone();
             env.events().publish(
                 (symbol_short!("dispute"), Symbol::new(env, "reput_slashed")),
                 (dispute.job_id, loser, slash_amount),
@@ -1208,16 +1206,14 @@ fn internal_resolve(
         .set(&DataKey::Dispute(dispute_id), &*dispute);
     bump_dispute_ttl(env, dispute_id);
 
-    let client = dispute.client.clone();
-    let freelancer = dispute.freelancer.clone();
     env.events().publish(
         (symbol_short!("dispute"), symbol_short!("resolved")),
         (
             dispute_id,
             dispute.status.clone(),
             dispute.job_id,
-            client,
-            freelancer,
+            dispute.client.clone(),
+            dispute.freelancer.clone(),
             resolution,
         ),
     );
