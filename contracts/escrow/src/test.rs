@@ -51,7 +51,8 @@ fn pause_escrow(env: &Env, client: &EscrowContractClient<'_>, admin: &Address) {
 }
 
 fn unpause_escrow(env: &Env, client: &EscrowContractClient<'_>, admin: &Address) {
-    client.propose_admin_action(admin, &AdminAction::Unpause);
+    let proposal_id = client.propose_admin_action(admin, &AdminAction::Unpause);
+    client.approve_admin_action(admin, &proposal_id);
 }
 
 fn setup_multisig(env: &Env) -> (EscrowContractClient<'_>, Address, Address, Address, Address, Address) {
@@ -1360,6 +1361,7 @@ fn test_initialize_pause() {
     client.initialize(&vec![&env, admin.clone()], &1, &admin, &100u32, &604800u64);
 }
 
+#[test]
 fn test_pause_and_unpause() {
     let env = Env::default();
     env.mock_all_auths();
