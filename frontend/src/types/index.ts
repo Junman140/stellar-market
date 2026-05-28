@@ -1,18 +1,22 @@
 export interface User {
   id: string;
-  walletAddress: string;
+  walletAddress?: string | null;
   username: string;
   email?: string;
   emailVerified?: boolean;
   bio?: string;
   avatarUrl?: string;
-  role: "CLIENT" | "FREELANCER";
+  role: "CLIENT" | "FREELANCER" | "ADMIN";
   twoFactorEnabled?: boolean;
   skills?: string[];
   averageRating?: number;
   reviewCount?: number;
   availability?: boolean;
   completedOnboarding?: boolean;
+  authMethods?: {
+    email: boolean;
+    wallet: boolean;
+  };
   reputation?: {
     totalScore: string;
     totalWeight: string;

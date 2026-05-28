@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import Image from "next/image";
+import { useContext } from "react";
 import { Clock, DollarSign, Users } from "lucide-react";
 import StatusBadge from "./StatusBadge";
 import EscrowStatusBadge from "./EscrowStatusBadge";
-import { Job } from "@/types";
-import { useAuth } from "@/context/AuthContext";
+import { Job, User as UserType } from "@/types";
+import { AuthContext } from "@/context/AuthContext";
 
 interface JobCardProps {
   job: Job;
@@ -16,10 +17,12 @@ interface JobCardProps {
    * all others are lazy-loaded.
    */
   index?: number;
+  viewer?: Partial<UserType> | null;
 }
 
-export default function JobCard({ job, index = 0 }: JobCardProps) {
-  const { user } = useAuth();
+export default function JobCard({ job, index = 0, viewer }: JobCardProps) {
+  const authUser = useContext(AuthContext)?.user ?? null;
+  const user = viewer ?? authUser;
   const isFreelancer = user?.role === "FREELANCER";
   const isClient = user?.role === "CLIENT";
   const isOwnJob = user?.id === job.client.id;
