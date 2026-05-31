@@ -262,21 +262,23 @@ fn is_signer(env: &Env, address: &Address) -> bool {
     }
 }
 
-const MIN_TTL_THRESHOLD: u32 = 1_000;
-const MIN_TTL_EXTEND_TO: u32 = 10_000;
+// Production TTL constants based on Stellar's ~5-second ledger close time
+const LEDGERS_PER_DAY: u32 = 17_280; // 86,400 seconds/day ÷ 5 seconds/ledger
+const TTL_THRESHOLD_LEDGERS: u32 = LEDGERS_PER_DAY * 15; // 15 days = 259,200 ledgers
+const TTL_EXTEND_TO_LEDGERS: u32 = LEDGERS_PER_DAY * 30; // 30 days = 518,400 ledgers
 
 fn bump_job_ttl(env: &Env, job_id: u64) {
     env.storage().persistent().extend_ttl(
         &get_job_key(job_id),
-        MIN_TTL_THRESHOLD,
-        MIN_TTL_EXTEND_TO,
+        TTL_THRESHOLD_LEDGERS,
+        TTL_EXTEND_TO_LEDGERS,
     );
 }
 
 fn bump_job_count_ttl(env: &Env) {
     env.storage()
         .instance()
-        .extend_ttl(MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
 }
 
 #[contract]
@@ -330,8 +332,6 @@ impl EscrowContract {
     }
 
     pub fn add_allowed_token(env: Env, admin: Address, token: Address) -> Result<(), EscrowError> {
-        require_not_paused(&env)?;
-
         admin.require_auth();
         if !is_signer(&env, &admin) {
             return Err(EscrowError::NotAdmin);
@@ -390,72 +390,6 @@ impl EscrowContract {
             .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
-    }
-
-    /// Emergency pause: immediately halt all state-mutating operations.
-    /// Only callable by a registered multi-sig signer. Bypasses time-lock for emergency response.
-    pub fn pause(env: Env, admin: Address) -> Result<(), EscrowError> {
-        admin.require_auth();
-        if !is_signer(&env, &admin) {
-            return Err(EscrowError::NotAdmin);
-        }
-
-        // Check if already paused to avoid redundant event emission
-        let currently_paused: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false);
-        if currently_paused {
-            return Ok(());
-        }
-
-        // Set paused to true
-        env.storage().instance().set(&DataKey::Paused, &true);
-        env.storage()
-            .instance()
-            .extend_ttl(MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
-
-        // Emit pause event
-        env.events().publish(
-            (symbol_short!("paused"),),
-            (env.current_contract_address(), env.ledger().sequence()),
-        );
-
-        Ok(())
-    }
-
-    /// Emergency unpause: resume normal contract operations.
-    /// Only callable by a registered multi-sig signer.
-    pub fn unpause(env: Env, admin: Address) -> Result<(), EscrowError> {
-        admin.require_auth();
-        if !is_signer(&env, &admin) {
-            return Err(EscrowError::NotAdmin);
-        }
-
-        // Check if already unpaused to avoid redundant event emission
-        let currently_paused: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false);
-        if !currently_paused {
-            return Ok(());
-        }
-
-        // Set paused to false
-        env.storage().instance().set(&DataKey::Paused, &false);
-        env.storage()
-            .instance()
-            .extend_ttl(MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
-
-        // Emit unpause event
-        env.events().publish(
-            (symbol_short!("unpaused"),),
-            (env.current_contract_address(), env.ledger().sequence()),
-        );
-
-        Ok(())
     }
 
     pub fn propose_admin_action(
@@ -1110,6 +1044,7 @@ impl EscrowContract {
         }
 
         env.storage().persistent().set(&get_job_key(job_id), &job);
+        bump_job_ttl(&env, job_id);
 
         env.events().publish(
             (symbol_short!("escrow"), symbol_short!("dispute")),
@@ -1179,9 +1114,11 @@ impl EscrowContract {
         env.storage()
             .persistent()
             .set(&submitted_key, &env.ledger().timestamp());
-        env.storage()
-            .persistent()
-            .extend_ttl(&submitted_key, MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &submitted_key,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
 
         let auto_key = DataKey::InactivityAutoApproveAt(job_id, milestone_id);
         if env.storage().persistent().has(&auto_key) {
@@ -1496,9 +1433,11 @@ impl EscrowContract {
         let auto_approve_at = now.saturating_add(INACTIVITY_GRACE_SECS);
         let auto_key = DataKey::InactivityAutoApproveAt(job_id, milestone_id);
         env.storage().persistent().set(&auto_key, &auto_approve_at);
-        env.storage()
-            .persistent()
-            .extend_ttl(&auto_key, MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &auto_key,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
 
         env.events().publish(
             (symbol_short!("escrow"), Symbol::new(&env, "inact_trig")),
@@ -2032,8 +1971,8 @@ impl EscrowContract {
         // Extend TTL
         env.storage().persistent().extend_ttl(
             &DataKey::RevisionProposal(job_id),
-            MIN_TTL_THRESHOLD,
-            MIN_TTL_EXTEND_TO,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
         );
 
         // 7. Emit event
@@ -2132,8 +2071,8 @@ impl EscrowContract {
             .set(&DataKey::RevisionHistory(job_id), &history);
         env.storage().persistent().extend_ttl(
             &DataKey::RevisionHistory(job_id),
-            MIN_TTL_THRESHOLD,
-            MIN_TTL_EXTEND_TO,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
         );
 
         // 5. Compute balance delta
@@ -2180,6 +2119,11 @@ impl EscrowContract {
         env.storage()
             .persistent()
             .set(&DataKey::RevisionProposal(job_id), &proposal);
+        env.storage().persistent().extend_ttl(
+            &DataKey::RevisionProposal(job_id),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
 
         // 10. Emit event
         env.events().publish(
@@ -2246,6 +2190,11 @@ impl EscrowContract {
         env.storage()
             .persistent()
             .set(&DataKey::RevisionProposal(job_id), &proposal);
+        env.storage().persistent().extend_ttl(
+            &DataKey::RevisionProposal(job_id),
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
 
         // 5. Emit event
         env.events().publish(
@@ -2279,8 +2228,6 @@ impl EscrowContract {
         caller: Address,
         job_id: u64,
     ) -> Result<(), EscrowError> {
-        require_not_paused(&env)?;
-
         caller.require_auth();
 
         // 1. Load job
@@ -2486,12 +2433,50 @@ impl EscrowContract {
 
         job.milestones = milestones;
         env.storage().persistent().set(&get_job_key(job_id), &job);
+        bump_job_ttl(&env, job_id);
 
         // Emit deadline extension event
         env.events().publish(
             (symbol_short!("escrow"), symbol_short!("deadline")),
             (job_id, milestone_id, new_deadline),
         );
+
+        Ok(())
+    }
+
+    /// Permissionless function to extend the TTL of an escrow's persistent storage.
+    ///
+    /// This function allows anyone to extend the TTL of an escrow's storage to prevent
+    /// it from being archived by Soroban's rent mechanism. This is particularly useful
+    /// for long-running escrows that may approach their TTL expiry.
+    ///
+    /// # Arguments
+    /// * `escrow_id` — The unique identifier of the escrow (job) to bump
+    ///
+    /// # Behavior
+    /// - Verifies the escrow exists by reading it from persistent storage
+    /// - Extends the TTL of the escrow's storage key to TTL_EXTEND_TO_LEDGERS (~30 days)
+    /// - Can be called for escrows in any state, including terminal states (Completed, Cancelled, Expired)
+    /// - Does not modify any escrow state or emit events
+    ///
+    /// # Errors
+    /// * `JobNotFound` — if no escrow exists with the given ID
+    ///
+    /// # Notes
+    /// - This function is intentionally permissionless to allow anyone to maintain storage
+    /// - Terminal escrows may still need TTL extension for historical/audit purposes
+    /// - Only extends the main job storage key; ephemeral keys (proposals, timestamps) are
+    ///   extended by their respective functions when accessed
+    pub fn bump_escrow(env: Env, escrow_id: u64) -> Result<(), EscrowError> {
+        // Verify the escrow exists
+        let _job: Job = env
+            .storage()
+            .persistent()
+            .get(&get_job_key(escrow_id))
+            .ok_or(EscrowError::JobNotFound)?;
+
+        // Extend TTL for the escrow storage key
+        bump_job_ttl(&env, escrow_id);
 
         Ok(())
     }
