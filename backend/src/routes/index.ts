@@ -20,6 +20,7 @@ import webhookRoutes from "./webhook.routes";
 import healthRoutes from "./health.routes";
 import referralRoutes from "./referral.routes";
 import reportRoutes from "./report.routes";
+import categoryRoutes from "./category.routes";
 
 const router = Router();
 
@@ -44,5 +45,6 @@ router.use("/platform", platformRoutes);
 router.use("/portfolio", portfolioRoutes);
 router.use("/webhooks", webhookRoutes);
 router.use("/reports", reportRoutes);
+router.use("/categories", categoryRoutes);
 
 export default router;

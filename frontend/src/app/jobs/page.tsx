@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { Search, SlidersHorizontal, Briefcase, Loader2, Wifi, ArrowUp } from "lucide-react";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import axios from "axios";
 import JobCard from "@/components/JobCard";
 import JobCardSkeleton from "@/components/skeletons/JobCardSkeleton";
@@ -19,6 +20,10 @@ const JOBS_PER_PAGE = 10;
 
 function JobsContent() {
   const { user } = useAuth();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
   const {
     filters,
     debouncedSearch,
@@ -33,13 +38,18 @@ function JobsContent() {
 
   const [jobs, setJobs] = useState<Job[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(() => {
+    const pageParam = searchParams.get("page");
+    return pageParam ? parseInt(pageParam, 10) : 1;
+  });
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [liveFeedEnabled, setLiveFeedEnabled] = useState(false);
   const [newJobIds, setNewJobIds] = useState<Set<string>>(new Set());
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  const [announcement, setAnnouncement] = useState("");
 
   const { pendingJobs, clearPending } = useLiveJobFeed(liveFeedEnabled);
 
@@ -105,17 +115,26 @@ function JobsContent() {
       const res = await axios.get<PaginatedResponse<Job>>(`${API_URL}/jobs`, {
         params: buildParams(nextPage),
       });
-      setJobs((prev) => [...prev, ...res.data.data]);
+      const newJobs = res.data.data;
+      setJobs((prev) => [...prev, ...newJobs]);
       setPage(nextPage);
       setHasMore(
-        res.data.data.length === JOBS_PER_PAGE && nextPage < res.data.totalPages,
+        newJobs.length === JOBS_PER_PAGE && nextPage < res.data.totalPages,
       );
+
+      // Sync page to URL for browser back/forward
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("page", String(nextPage));
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+
+      // Screen reader announcement
+      setAnnouncement(`Loaded ${newJobs.length} more jobs. Page ${nextPage}.`);
     } catch {
       // keep existing results on error
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, hasMore, page, buildParams]);
+  }, [loadingMore, hasMore, page, buildParams, searchParams, router, pathname]);
 
   // Re-fetch from page 1 whenever filters change
   useEffect(() => {
@@ -124,6 +143,37 @@ function JobsContent() {
     }
     fetchFirstPage();
   }, [filterKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync page from URL on back/forward navigation
+  const urlPageRef = useRef(page);
+  useEffect(() => {
+    const urlPage = parseInt(searchParams.get("page") || "1", 10);
+    if (urlPage !== urlPageRef.current && urlPage !== page && !loading && !loadingMore) {
+      urlPageRef.current = urlPage;
+      if (urlPage > page && hasMore) {
+        // Navigated forward — load missing pages
+        fetchNextPage();
+      } else if (urlPage < page) {
+        // Navigated backward — reload from that page
+        setLoading(true);
+        setPage(urlPage);
+        axios.get<PaginatedResponse<Job>>(`${API_URL}/jobs`, {
+          params: buildParams(urlPage),
+        }).then((res) => {
+          setJobs(res.data.data);
+          setTotal(res.data.total);
+          setHasMore(
+            res.data.data.length === JOBS_PER_PAGE && urlPage < res.data.totalPages,
+          );
+        }).catch(() => {
+          setJobs([]);
+          setTotal(0);
+          setHasMore(false);
+        }).finally(() => setLoading(false));
+      }
+    }
+    urlPageRef.current = urlPage;
+  }, [searchParams, page, hasMore, loading, loadingMore, fetchNextPage, buildParams]);
 
   const loadNewJobs = useCallback(() => {
     if (pendingJobs.length === 0) return;
@@ -159,8 +209,18 @@ function JobsContent() {
     rootMargin: 200,
   });
 
+  // Scroll detection for Back-to-top button (after ~3 pages = ~30 jobs)
+  useEffect(() => {
+    const handleScroll = () => {
+      setShowBackToTop(window.scrollY > window.innerHeight * 2);
+    };
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
+
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+    <>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-4">
@@ -322,7 +382,28 @@ function JobsContent() {
           )}
         </div>
       </div>
-    </div>
+
+      {/* Screen reader announcement for new results */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {announcement}
+      </div>
+
+      {/* Back to top button */}
+      {showBackToTop && (
+        <button
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          className="fixed bottom-8 right-8 p-3 rounded-full bg-stellar-blue text-white shadow-lg hover:bg-stellar-blue/90 transition-all z-50"
+          aria-label="Back to top"
+        >
+          <ArrowUp size={20} />
+        </button>
+      )}
+    </>
   );
 }
 
