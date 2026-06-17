@@ -64,6 +64,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "last_updated_timestamp"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "review_count"
                       },
                       "val": {

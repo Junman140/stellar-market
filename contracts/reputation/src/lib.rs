@@ -52,6 +52,7 @@ mod escrow {
         pub milestones: Vec<Milestone>,
         pub job_deadline: u64,
         pub auto_refund_after: u64,
+        pub expiry_ledger: u32,
     }
 
     #[soroban_sdk::contractclient(name = "EscrowContractClient")]
@@ -112,6 +113,7 @@ pub struct UserReputation {
     pub total_weight: u64,
     pub review_count: u32,
     pub last_updated_ledger: u32,
+    pub last_updated_timestamp: u64,
 }
 
 #[contracttype]
@@ -356,33 +358,51 @@ pub fn apply_lazy_decay(env: &Env, rep: &mut UserReputation) {
         .unwrap_or(0);
     if decay_rate == 0 || decay_rate >= 100 {
         rep.last_updated_ledger = env.ledger().sequence();
+        rep.last_updated_timestamp = env.ledger().timestamp();
         return;
     }
 
+    let current_timestamp = env.ledger().timestamp();
     let current_ledger = env.ledger().sequence();
-    if current_ledger <= rep.last_updated_ledger {
+    
+    // Use timestamp for decay calculation (30-day periods) - matches original behavior
+    const PERIOD_SECONDS: u64 = 30 * 86400; // 30 days in seconds
+    
+    // Initialize last_updated_timestamp if not set (for existing records)
+    if rep.last_updated_timestamp == 0 {
+        rep.last_updated_timestamp = current_timestamp;
+    }
+    
+    if current_timestamp <= rep.last_updated_timestamp {
         return;
     }
 
-    let elapsed = current_ledger - rep.last_updated_ledger;
-    let periods = elapsed / 518400; // e.g. 30 days
+    let elapsed_seconds = current_timestamp - rep.last_updated_timestamp;
+    let periods = elapsed_seconds / PERIOD_SECONDS;
 
     if periods > 0 {
         let retained = 100_u64.saturating_sub(decay_rate as u64);
-        let mut score = rep.total_score;
-        let mut weight = rep.total_weight;
-
-        for _ in 0..periods {
-            score = (score * retained) / 100;
-            weight = (weight * retained) / 100;
-            if score == 0 && weight == 0 {
-                break;
-            }
+        
+        // Closed-form exponential decay using fixed-point arithmetic.
+        // Computes: value * (retained/100)^periods
+        // Uses 10_000 as scaling factor (basis points) for consistency with original.
+        const SCALE: u128 = 10_000;
+        
+        let decay_factor = fixed_point_pow(retained, 100, periods as u64);
+        
+        // If decay_factor is 0, score and weight decay to 0
+        if decay_factor == 0 {
+            rep.total_score = 0;
+            rep.total_weight = 0;
+        } else {
+            rep.total_score = ((rep.total_score as u128).saturating_mul(decay_factor) / SCALE) as u64;
+            rep.total_weight = ((rep.total_weight as u128).saturating_mul(decay_factor) / SCALE) as u64;
         }
-
-        rep.total_score = score;
-        rep.total_weight = weight;
-        rep.last_updated_ledger += periods * 518400;
+        
+        // Update last_updated_timestamp to the end of the last applied period
+        // This prevents re-applying the same periods on the next call
+        rep.last_updated_timestamp = rep.last_updated_timestamp.saturating_add(periods * PERIOD_SECONDS);
+        rep.last_updated_ledger = current_ledger;
     }
 }
 
@@ -395,6 +415,39 @@ fn get_decay_factor(decay_rate: u32, current_time: u64, recorded_at: u64) -> u64
     let decay_amount = (decay_rate as u64).saturating_mul(age_in_seconds) / ONE_YEAR_IN_SECONDS;
 
     100_u64.saturating_sub(decay_amount)
+}
+
+/// Fixed-point exponentiation using exponentiation by squaring.
+/// Computes (numerator / denominator)^exponent * SCALE as u128.
+/// Uses 10_000 as the scaling factor (basis points).
+fn fixed_point_pow(numerator: u64, denominator: u64, exponent: u64) -> u128 {
+    const SCALE: u128 = 10_000;
+    
+    if exponent == 0 {
+        return SCALE;
+    }
+    
+    let mut base = (numerator as u128 * SCALE) / (denominator as u128);
+    let mut result = SCALE;
+    let mut exp = exponent;
+    
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result = result.saturating_mul(base) / SCALE;
+            if result == 0 {
+                return 0;
+            }
+        }
+        exp >>= 1;
+        if exp > 0 {
+            base = base.saturating_mul(base) / SCALE;
+            if base == 0 {
+                return 0;
+            }
+        }
+    }
+    
+    result
 }
 
 /// Calculate the reputation tier based on average rating score.
@@ -550,6 +603,7 @@ impl ReputationContract {
                     total_weight: 0,
                     review_count: 0,
                     last_updated_ledger: env.ledger().sequence(),
+                    last_updated_timestamp: env.ledger().timestamp(),
                 });
 
         apply_lazy_decay(&env, &mut reputation);
@@ -558,6 +612,7 @@ impl ReputationContract {
         reputation.total_weight += weight;
         reputation.review_count += 1;
         reputation.last_updated_ledger = env.ledger().sequence();
+        reputation.last_updated_timestamp = env.ledger().timestamp();
 
         env.storage().persistent().set(&rep_key, &reputation);
         bump_reputation_ttl(&env, &reviewee);
@@ -795,6 +850,7 @@ impl ReputationContract {
                     total_weight: 0,
                     review_count: 0,
                     last_updated_ledger: env.ledger().sequence(),
+                    last_updated_timestamp: env.ledger().timestamp(),
                 });
 
             apply_lazy_decay(env, &mut reputation);
@@ -802,6 +858,7 @@ impl ReputationContract {
             reputation.total_score += earned_score;
             reputation.total_weight += weight;
             reputation.last_updated_ledger = env.ledger().sequence();
+            reputation.last_updated_timestamp = env.ledger().timestamp();
 
             env.storage().persistent().set(&rep_key, &reputation);
             bump_reputation_ttl(env, &referrer);
@@ -864,6 +921,7 @@ impl ReputationContract {
             total_weight,
             review_count,
             last_updated_ledger: env.ledger().sequence(),
+            last_updated_timestamp: env.ledger().timestamp(),
         })
     }
 
@@ -985,12 +1043,14 @@ impl ReputationContract {
                     total_weight: 0,
                     review_count: 0,
                     last_updated_ledger: env.ledger().sequence(),
+                    last_updated_timestamp: env.ledger().timestamp(),
                 });
 
         apply_lazy_decay(&env, &mut reputation);
 
         reputation.total_score = reputation.total_score.saturating_sub(amount);
         reputation.last_updated_ledger = env.ledger().sequence();
+        reputation.last_updated_timestamp = env.ledger().timestamp();
         env.storage().persistent().set(&rep_key, &reputation);
         bump_reputation_ttl(&env, &user);
 
@@ -1041,6 +1101,7 @@ impl ReputationContract {
                 total_weight: 0,
                 review_count: 0,
                 last_updated_ledger: 0,
+                last_updated_timestamp: env.ledger().timestamp(),
             });
 
         if score_change > 0 {
@@ -1299,12 +1360,14 @@ impl ReputationContract {
                         total_weight: 0,
                         review_count: 0,
                         last_updated_ledger: env.ledger().sequence(),
+                        last_updated_timestamp: env.ledger().timestamp(),
                     });
 
                 apply_lazy_decay(&env, &mut reputation);
 
                 reputation.total_score = reputation.total_score.saturating_sub(amount);
                 reputation.last_updated_ledger = env.ledger().sequence();
+                reputation.last_updated_timestamp = env.ledger().timestamp();
                 env.storage().persistent().set(&rep_key, &reputation);
                 bump_reputation_ttl(env, &loser);
 
@@ -1371,6 +1434,7 @@ impl ReputationContract {
                     total_weight: 0,
                     review_count: 0,
                     last_updated_ledger: env.ledger().sequence(),
+                    last_updated_timestamp: env.ledger().timestamp(),
                 });
 
         apply_lazy_decay(env, &mut rep);
@@ -1782,6 +1846,7 @@ impl ReputationContract {
                     total_weight: 0,
                     review_count: 0,
                     last_updated_ledger: env.ledger().sequence(),
+                    last_updated_timestamp: env.ledger().timestamp(),
                 });
 
             apply_lazy_decay(&env, &mut reputation);
@@ -1869,6 +1934,7 @@ mod tests {
                     total_weight: MIN_REVIEW_STAKE_DEFAULT as u64,
                     review_count: 1,
                     last_updated_ledger: env.ledger().sequence(),
+                    last_updated_timestamp: env.ledger().timestamp(),
                 },
             );
         });
@@ -1953,6 +2019,8 @@ mod tests {
                     total_score: 100,
                     total_weight: 10,
                     review_count: 1,
+                    last_updated_ledger: env.ledger().sequence(),
+                    last_updated_timestamp: env.ledger().timestamp(),
                 },
             );
         });
@@ -1967,6 +2035,8 @@ mod tests {
                     total_score: 500,
                     total_weight: 50,
                     review_count: 5,
+                    last_updated_ledger: env.ledger().sequence(),
+                    last_updated_timestamp: env.ledger().timestamp(),
                 },
             );
         });
@@ -1981,6 +2051,8 @@ mod tests {
                     total_score: 2000,
                     total_weight: 200,
                     review_count: 20,
+                    last_updated_ledger: env.ledger().sequence(),
+                    last_updated_timestamp: env.ledger().timestamp(),
                 },
             );
         });
@@ -1995,6 +2067,8 @@ mod tests {
                     total_score: 99,
                     total_weight: 10,
                     review_count: 1,
+                    last_updated_ledger: env.ledger().sequence(),
+                    last_updated_timestamp: env.ledger().timestamp(),
                 },
             );
         });
@@ -2026,6 +2100,8 @@ mod tests {
                     total_score: 500,
                     total_weight: 50,
                     review_count: 5,
+                    last_updated_ledger: env.ledger().sequence(),
+                    last_updated_timestamp: env.ledger().timestamp(),
                 },
             );
         });
@@ -2069,6 +2145,8 @@ mod tests {
                     total_score: 100,
                     total_weight: 10,
                     review_count: 1,
+                    last_updated_ledger: env.ledger().sequence(),
+                    last_updated_timestamp: env.ledger().timestamp(),
                 },
             );
         });

@@ -41,6 +41,7 @@ fn setup_completed_job(
         &milestones,
         &9999999999u64,
         &86400u64,
+        &1000000u32,
     );
 
     // Fund the job
@@ -74,6 +75,7 @@ fn setup_in_progress_job(
         &milestones,
         &9999999999u64,
         &86400u64,
+        &1000000u32,
     );
 
     // Fund the job to move it to Funded status
@@ -1956,8 +1958,9 @@ fn test_last_updated_ledger_advances_on_write() {
     let reviewer2 = Address::generate(&env);
     setup_review_for(&env, &escrow_id, &client, 2, &reviewer2, &reviewee, 4);
 
-    let ledger_after = client.get_reputation(&reviewee).last_updated_ledger;
+let ledger_after = client.get_reputation(&reviewee).last_updated_ledger;
     assert!(ledger_after > ledger_before);
+}
 
 // ── tier_up event tests (Issue #464) ────────────────────────────────────────
 
