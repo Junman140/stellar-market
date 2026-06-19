@@ -102,7 +102,7 @@ export async function submitWithPreRegistration(
     }),
   });
 
-  await server.submitTransaction(tx);
+  await server.sendTransaction(tx);
   return txHash;
 }
 
